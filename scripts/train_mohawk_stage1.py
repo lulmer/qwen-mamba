@@ -24,8 +24,11 @@ from transformers import AutoTokenizer
 from modules.lm_head import LMHeadModel
 from modules.modeling_phi import PhiForCausalLM
 from utils.config import Config
+from utils.plotting import plot_loss
 
 device = "cuda"
+experiment_name = "stage_1"
+
 
 teacher_model = PhiForCausalLM.from_pretrained(
     "microsoft/phi-1_5", attn_implementation="eager"
@@ -36,9 +39,8 @@ teacher_model.requires_grad_(False)
 model_config = Config.from_json("assets/sample_config.json")
 student_model = LMHeadModel(model_config).to(device)
 
-dataset = load_dataset("stas/openwebtext-10k", trust_remote_code=True)["train"]
+dataset = load_dataset("stas/openwebtext-10k", revision="refs/convert/parquet")["train"]
 
-# TODO : This should to be used instead of single inputs
 dataloader = DataLoader(dataset, batch_size=4)
 
 # Adding an Optimizer : 
@@ -81,7 +83,7 @@ for idx, batch in enumerate(dataloader):
     mean_layer_loss = []
     for layer_idx, student_layer in enumerate(student_model.backbone.layers):
         
-        student_input = teacher_outputs.all_hidden_states[layer_idx]
+        student_input = teacher_outputs.all_hidden_states[layer_idx].float()
 
         # Forward pass
         student_output = student_layer(
@@ -90,7 +92,7 @@ for idx, batch in enumerate(dataloader):
             return_mixer_matrix=True,
         )
         transfer_matrix = student_output["transfer_matrix"]
-        attn_matrix = teacher_outputs.all_attn_matrices[layer_idx]
+        attn_matrix = teacher_outputs.all_attn_matrices[layer_idx].float()
 
         assert transfer_matrix.size() == attn_matrix.size()
 
@@ -107,38 +109,15 @@ for idx, batch in enumerate(dataloader):
 
     token_counts.append(total_tokens)
     mean_iteration_losses.append(np.mean(mean_layer_loss))
-    # Plot the results
 
-plt.figure(figsize=(10, 6))
-plt.plot(token_counts, mean_iteration_losses, 'b-', linewidth=2, label='Mean Attention L2 Loss')
-plt.xlabel('Number of Tokens')
-plt.ylabel('Attention L2 Loss')
-plt.title('Training Progress: Mean Attention Loss vs Tokens Processed')
-plt.grid(True, alpha=0.3)
-plt.legend()
-
-# Format x-axis to show tokens in K/M
-def format_tokens(x, pos):
-    if x >= 1_000_000:
-        return f'{x/1_000_000:.1f}M'
-    elif x >= 1_000:
-        return f'{x/1_000:.1f}K'
-    else:
-        return f'{int(x)}'
-
-from matplotlib.ticker import FuncFormatter
-plt.gca().xaxis.set_major_formatter(FuncFormatter(format_tokens))
-
-
-# Save the plot
-plt.savefig('training_loss_plot.png', dpi=300, bbox_inches='tight')
-plt.show()
+# Plot the loss 
+plot_loss(token_counts, mean_iteration_losses, experiment_name)
 
 # Also save the data for later analysis
 np.save('loss_data.npy', {'losses': mean_iteration_losses, 'token_counts': token_counts})
 
 # Create a directory for the saved model
-save_dir = "saved_models/student_mohawk_stage1"
+save_dir = "saved_models/student_mohawk_stage2"
 os.makedirs(save_dir, exist_ok=True)
 
 # Save the model state dict
