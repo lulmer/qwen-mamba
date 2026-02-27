@@ -27,10 +27,8 @@ from torch import nn
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache, DynamicCache
-from transformers.modeling_attn_mask_utils import (
-    _prepare_4d_causal_attention_mask,
-    _prepare_4d_causal_attention_mask_for_sdpa,
-)
+from transformers.generation import GenerationMixin
+from transformers.masking_utils import create_causal_mask
 from transformers.modeling_outputs import (
     BaseModelOutputWithPast,
     CausalLMOutputWithPast,
@@ -1100,30 +1098,21 @@ class PhiModel(PhiPreTrainedModel):
 
         inputs_embeds = self.embed_dropout(inputs_embeds)
 
-        # Attention mask.
-        if self._use_flash_attention_2:
-            # 2d mask is passed through the layers
-            attention_mask = (
-                attention_mask
-                if (attention_mask is not None and 0 in attention_mask)
-                else None
-            )
-        elif self._use_sdpa and not output_attentions:
-            attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
-                attention_mask,
-                (batch_size, seq_length),
-                inputs_embeds,
-                past_key_values_length,
-            )
-        else:
-            # 4d mask is passed through the layers
-            attention_mask = _prepare_4d_causal_attention_mask(
-                attention_mask,
-                (batch_size, seq_length),
-                inputs_embeds,
-                past_key_values_length,
-            )
+        # Build cache_position for the new masking API
+        cache_position = torch.arange(
+            past_key_values_length,
+            past_key_values_length + seq_length,
+            device=inputs_embeds.device,
+        )
 
+        attention_mask = create_causal_mask(
+            config=self.config,
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            cache_position=cache_position,
+            past_key_values=past_key_values,
+            position_ids=position_ids,
+        )
         hidden_states = inputs_embeds
 
         # decoder layers
@@ -1200,7 +1189,7 @@ class PhiModel(PhiPreTrainedModel):
         # )
 
 
-class PhiForCausalLM(PhiPreTrainedModel):
+class PhiForCausalLM(PhiPreTrainedModel, GenerationMixin):
     _tied_weights_keys = ["lm_head.weight"]
 
     # Copied from transformers.models.llama.modeling_llama.LlamaForCausalLM.__init__ with Llama->Phi,bias=False->bias=True
